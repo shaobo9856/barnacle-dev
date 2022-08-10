@@ -16,7 +16,7 @@ mod benchmarking;
 
 #[frame_support::pallet]
 pub mod pallet {
-	use frame_support::pallet_prelude::*;
+	use frame_support::pallet_prelude::{*, ValueQuery};
 	use frame_system::pallet_prelude::*;
 
 	/// Configure the pallet by specifying the parameters and types on which it depends.
@@ -37,6 +37,10 @@ pub mod pallet {
 	// Learn more about declaring storage items:
 	// https://docs.substrate.io/v3/runtime/storage#declaring-storage-items
 	pub type Something<T> = StorageValue<_, u32>;
+
+	#[pallet::storage]
+	#[pallet::getter(fn something2)]
+	pub type Something2<T:Config> = StorageDoubleMap<_,Blake2_128Concat, u32, Blake2_128Concat, T::AccountId, u32,ValueQuery>;
 
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/v3/runtime/events-and-errors
@@ -76,6 +80,22 @@ pub mod pallet {
 
 			// Emit an event.
 			Self::deposit_event(Event::SomethingStored(something, who));
+			// Return a successful DispatchResultWithPostInfo
+			Ok(())
+		}
+
+		#[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
+		pub fn do_something2(origin: OriginFor<T>, something1: u32, something2: u32) -> DispatchResult {
+			// Check that the extrinsic was signed and get the signer.
+			// This function will return an error if the extrinsic is not signed.
+			// https://docs.substrate.io/v3/runtime/origins
+			let who = ensure_signed(origin)?;
+
+			// Update storage.
+			Something2::<T>::insert(something1,who.clone(),something2);
+
+			// Emit an event.
+			Self::deposit_event(Event::SomethingStored(something1, who));
 			// Return a successful DispatchResultWithPostInfo
 			Ok(())
 		}
