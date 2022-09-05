@@ -5,6 +5,7 @@
 /// <https://docs.substrate.io/v3/runtime/frame>
 pub use pallet::*;
 
+
 #[cfg(test)]
 mod mock;
 
@@ -16,10 +17,21 @@ mod benchmarking;
 
 #[frame_support::pallet]
 pub mod pallet {
+	use frame_support::traits::UnixTime;
 	use frame_support::pallet_prelude::{*, ValueQuery};
 	use frame_support::inherent::Vec;
 	use frame_system::pallet_prelude::*;
-	
+	use frame_support::sp_runtime::SaturatedConversion;
+	use frame_support::{
+		traits::{
+			Currency, ExistenceRequirement::KeepAlive, Get, Imbalance, OnUnbalanced,
+			ReservableCurrency, WithdrawReasons,
+		},
+		weights::Weight,
+		PalletId,
+	};
+	pub type BalanceOf<T> = <<T as Config>::MyCurrency as Currency<<T as frame_system::Config>::AccountId>>::Balance;
+
 	/// To represent a rendering instance
 	#[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo, Debug)]
 	pub struct Renderer<BlockNumber> {
@@ -32,11 +44,20 @@ pub mod pallet {
 		// TODO POV staking
 	}
 
+	// /// To represent a order
+	// #[derive(Encode, Decode, Clone, PartialEq, Eq, Default, TypeInfo, Debug)]
+	// pub struct Order{
+	// 	pub player: Vec<u8>,
+	// 	pub starttime: u16,
+	// }
+
 	/// Configure the pallet by specifying the parameters and types on which it depends.
 	#[pallet::config]
 	pub trait Config: frame_system::Config {
 		/// Because this pallet emits events, it depends on the runtime's definition of an event.
 		type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
+		type MyCurrency: Currency<Self::AccountId>;
+		type TimeProvider: UnixTime;
 	}
 
 	#[pallet::pallet]
@@ -46,12 +67,6 @@ pub mod pallet {
 
 	// // The pallet's runtime storage items.
 	// // https://docs.substrate.io/v3/runtime/storage
-	// #[pallet::storage]
-	// #[pallet::getter(fn something)]
-	// // Learn more about declaring storage items:
-	// // https://docs.substrate.io/v3/runtime/storage#declaring-storage-items
-	// pub type Something<T> = StorageValue<_, u32>;
-
 	// #[pallet::storage]
 	// #[pallet::getter(fn something2)]
 	// pub type Something2<T:Config> = StorageDoubleMap<_,Blake2_128Concat, u32, Blake2_128Concat, T::AccountId, u32,ValueQuery>;
@@ -71,6 +86,20 @@ pub mod pallet {
         OptionQuery,
     >;
 
+	#[pallet::storage]
+	#[pallet::getter(fn orders)]
+	// Learn more about declaring storage items:
+	// https://docs.substrate.io/v3/runtime/storage#declaring-storage-items
+	pub type Orders<T: Config> = StorageDoubleMap<
+		_,
+		Blake2_128Concat,
+		T::AccountId,
+		Blake2_128Concat,
+		T::AccountId,
+		u64, //Starttime,
+		OptionQuery,
+	>;
+
 	// Pallets use events to inform users when important changes are made.
 	// https://docs.substrate.io/v3/runtime/events-and-errors
 	#[pallet::event]
@@ -81,8 +110,8 @@ pub mod pallet {
 		SomethingStored(u32, T::AccountId),
 		RendererRegistered(T::AccountId),
 		RendererDeregistered(T::AccountId),
-		RendererConnected(T::AccountId,T::AccountId),
-		RendererDisconnected(T::AccountId,T::AccountId),
+		RendererConnected(T::AccountId,T::AccountId,u64),
+		RendererDisconnected(T::AccountId,T::AccountId,u64),
 	}
 
 	// Errors inform users that something went wrong.
@@ -100,40 +129,18 @@ pub mod pallet {
 	// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
-		/// An example dispatchable that takes a singles value as a parameter, writes the value to
-		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
-		// #[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
-		// pub fn do_somethingggg(origin: OriginFor<T>, something: u32) -> DispatchResult {
-		// 	// Check that the extrinsic was signed and get the signer.
-		// 	// This function will return an error if the extrinsic is not signed.
-		// 	// https://docs.substrate.io/v3/runtime/origins
-		// 	let who = ensure_signed(origin)?;
-
-		// 	// Update storage.
-		// 	<Something<T>>::put(something);
-
-		// 	// Emit an event.
-		// 	Self::deposit_event(Event::SomethingStored(something, who));
-		// 	// Return a successful DispatchResultWithPostInfo
-		// 	Ok(())
-		// }
-
 		// #[pallet::weight(10_000 + T::DbWeight::get().writes(1))]
 		// pub fn do_something2(origin: OriginFor<T>, something1: u32, something2: u32) -> DispatchResult {
-		// 	// Check that the extrinsic was signed and get the signer.
-		// 	// This function will return an error if the extrinsic is not signed.
-		// 	// https://docs.substrate.io/v3/runtime/origins
 		// 	let who = ensure_signed(origin)?;
-
 		// 	// Update storage.
 		// 	Something2::<T>::insert(something1,who.clone(),something2);
-
-		// 	// Emit an event.
-		// 	Self::deposit_event(Event::SomethingStored(something1, who));
-		// 	// Return a successful DispatchResultWithPostInfo
+		// }
+		// #[pallet::weight(10_000)]
+		// pub fn my_function(origin: OriginFor<T>, dest: T::AccountId, amount: BalanceOf<T>) -> DispatchResult {
+		// 	let buyer = ensure_signed(origin)?;
+		// 	T::MyCurrency::transfer(&buyer, &dest, amount, KeepAlive)?;
 		// 	Ok(())
 		// }
-
 
 		/// Register a renderer. A basic challenge should be initiated immediately by the offchain workers.
 		#[pallet::weight(10_000)]
@@ -184,7 +191,14 @@ pub mod pallet {
 				Ok(())
 			})?;
 			// TODO pay for the connection
-			Self::deposit_event(Event::RendererConnected(renderer,player));
+			let starttime = T::TimeProvider::now().as_secs();
+			Orders::<T>::try_mutate(&renderer, &player, |exists| -> DispatchResult {
+				ensure!(exists.is_none(), Error::<T>::AlreadyRegistered);
+				exists.replace(starttime);
+				Ok(())
+			})?;
+
+			Self::deposit_event(Event::RendererConnected(renderer,player,starttime));
 			Ok(())
 		}
 
@@ -203,33 +217,19 @@ pub mod pallet {
 				});
 				Ok(())
 			})?;
-			// TODO pay for the connection
-			Self::deposit_event(Event::RendererDisconnected(renderer,player));
+			// TODO pay for the connection	
+			let starttime: u64 = Orders::<T>::get(&renderer, &player).unwrap();
+			let endtime: u64 = T::TimeProvider::now().as_secs();
+			let duration: u64 = endtime - starttime;
+			let price: u64 = 100000000000000000;
+			let amount: u64 = duration * price;
+			let dest = renderer.clone();
+			T::MyCurrency::transfer(&player, &dest, amount.saturated_into::<BalanceOf<T>>(), KeepAlive)?;
+			Orders::<T>::remove(&renderer, &player);
+			Self::deposit_event(Event::RendererDisconnected(renderer,player,endtime));
 			Ok(())
 		}
 
-
-
-
-		// /// An example dispatchable that may throw a custom error.
-		// #[pallet::weight(10_000 + T::DbWeight::get().reads_writes(1,1))]
-		// pub fn cause_error(origin: OriginFor<T>) -> DispatchResult {
-		// 	let _who = ensure_signed(origin)?;
-
-		// 	// Read a value from storage.
-		// 	match <Something<T>>::get() {
-		// 		// Return an error if the value has not been set.
-		// 		None => Err(Error::<T>::NoneValue)?,
-		// 		Some(old) => {
-		// 			// Increment the value read from storage; will error in the event of overflow.
-		// 			let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-		// 			// Update the value in storage with the incremented result.
-		// 			<Something<T>>::put(new);
-		// 			Ok(())
-		// 		},
-		// 	}
-		// }
 	}
-
 
 }
