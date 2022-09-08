@@ -221,7 +221,7 @@ pub mod pallet {
 			let starttime: u64 = Orders::<T>::get(&renderer, &player).unwrap();
 			let endtime: u64 = T::TimeProvider::now().as_secs();
 			let duration: u64 = endtime - starttime;
-			let price: u64 = 100000000000000000;
+			let price: u64 = 10000000000000;
 			let amount: u64 = duration * price;
 			let dest = renderer.clone();
 			T::MyCurrency::transfer(&player, &dest, amount.saturated_into::<BalanceOf<T>>(), KeepAlive)?;
